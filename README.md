@@ -1,4 +1,4 @@
-# CryptoStream 🚀
+# CryptoStream 
 
 Real-time crypto data pipeline: **CoinGecko → Kafka → dbt → Neon PostgreSQL**, monitored by Prometheus & Grafana, orchestrated by Airflow.
 
@@ -170,3 +170,14 @@ cryptostream/
     └── dashboards/
         └── ingestor-overview.json
 ```
+
+---
+
+## CI/CD
+
+The project includes a GitHub Actions workflow (`.github/workflows/ci-cd.yml`) that runs on `push` and `pull_request` to the `main` branch.
+
+The workflow performs the following:
+1. **Configuration Validation:** Validates the `docker-compose.yml` file.
+2. **Docker Build:** Builds the Docker image for the `ingestor` service.
+3. **Docker Push:** Automatically pushes the built image to the GitHub Container Registry (GHCR) upon merges or pushes to the `main` branch.
