@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────
+#  Prometheus configuration for CryptoStream
+#
+#  Scrape targets:
+#   • ingestor:9464  — custom app metrics (Avro, Kafka, CoinGecko)
+#   • prometheus:9090 — self-monitoring
+# ─────────────────────────────────────────────────
+
+global:
+  scrape_interval:     15s   # Pull metrics every 15 seconds
+  evaluation_interval: 15s   # Evaluate alerting rules every 15 seconds
+  scrape_timeout:      10s
+
+  external_labels:
+    environment: "docker-local"
+    project: "cryptostream"
+
+scrape_configs:
+
+  # ── CryptoStream Ingestor ──────────────────────
+  - job_name: "cryptostream-ingestor"
+    static_configs:
+      - targets: ["ingestor:9464"]
+        labels:
+          service: "ingestor"
+    metrics_path: /metrics
+
+  # ── Kafka (JMX exporter — optional, add later) ─
+  # - job_name: "kafka"
+  #   static_configs:
+  #     - targets: ["kafka:7071"]
+
+  # ── Prometheus self-monitoring ─────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

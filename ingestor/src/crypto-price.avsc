@@ -1,0 +1,84 @@
+{
+  "type": "record",
+  "name": "CryptoPriceEvent",
+  "namespace": "io.cryptostream.prices",
+  "doc": "One price snapshot for one coin — produced every 5 minutes",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID generated at ingest time — used for deduplication downstream"
+    },
+    {
+      "name": "ingested_at",
+      "type": "long",
+      "doc": "Unix timestamp in milliseconds when this event was produced"
+    },
+    {
+      "name": "coin_id",
+      "type": "string",
+      "doc": "CoinGecko identifier e.g. bitcoin, ethereum, solana"
+    },
+    {
+      "name": "symbol",
+      "type": "string",
+      "doc": "Ticker symbol in lowercase e.g. btc, eth, sol"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "doc": "Human readable coin name e.g. Bitcoin"
+    },
+    {
+      "name": "current_price_usd",
+      "type": "double",
+      "doc": "Current price in USD — always present, always positive"
+    },
+    {
+      "name": "market_cap_usd",
+      "type": "double",
+      "doc": "Market capitalisation in USD"
+    },
+    {
+      "name": "total_volume_usd",
+      "type": "double",
+      "doc": "24 hour trading volume in USD"
+    },
+    {
+      "name": "price_change_24h",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Absolute price change in USD over last 24h — null if not available"
+    },
+    {
+      "name": "price_change_pct_24h",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Percentage price change over last 24h — null for new coins"
+    },
+    {
+      "name": "market_cap_rank",
+      "type": ["null", "int"],
+      "default": null,
+      "doc": "Rank by market cap — null if unranked"
+    },
+    {
+      "name": "ath_usd",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "All time high price in USD"
+    },
+    {
+      "name": "circulating_supply",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Current circulating supply of the coin"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "default": "coingecko",
+      "doc": "Data source — makes it easy to add more sources later"
+    }
+  ]
+}

@@ -1,0 +1,340 @@
+# ══════════════════════════════════════════════════════════════════
+#  CryptoStream — Full Stack docker-compose.yml
+#
+#  Services (start order follows depends_on):
+#   1. zookeeper          — ZooKeeper for Kafka coordination
+#   2. kafka              — Kafka broker (KRaft-ready via Confluent)
+#   3. schema-registry    — Confluent Schema Registry (Avro)
+#   4. kafka-ui           — Browser UI for inspecting topics / messages
+#   5. ingestor           — Node.js: CoinGecko → Kafka producer
+#   6. postgres           — PostgreSQL: Airflow metadata + dbt target
+#   7. airflow-init       — One-shot: migrates Airflow DB + creates admin user
+#   8. airflow-webserver  — Airflow UI  (port 8080)
+#   9. airflow-scheduler  — Airflow scheduler
+#  10. dbt                — dbt run (one-shot transformer; restarts on failure)
+#  11. prometheus         — Scrapes /metrics from ingestor
+#  12. grafana            — Dashboards (port 3000)
+#
+#  Networks:
+#   • cryptostream-net   — all services share one bridge network
+#
+#  Volumes (named, persistent):
+#   • kafka_data          — Kafka logs
+#   • zookeeper_data      — ZooKeeper data
+#   • postgres_data       — PostgreSQL data
+#   • airflow_logs        — Airflow task logs
+#   • prometheus_data     — Prometheus TSDB
+#   • grafana_data        — Grafana dashboards & datasources
+# ══════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+# ─────────────────────── Shared defaults ──────────────────────────
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.1-python3.11
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW_FERNET_KEY}"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    AIRFLOW__WEBSERVER__SECRET_KEY: "${AIRFLOW_SECRET_KEY}"
+    # Pass CryptoStream env vars so DAGs can use them
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    NEON_DATABASE_URL: "${NEON_DATABASE_URL}"
+    COINGECKO_API_KEY: "${COINGECKO_API_KEY}"
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/plugins:/opt/airflow/plugins
+    - airflow_logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - cryptostream-net
+
+# ─────────────────────────── Services ─────────────────────────────
+services:
+
+  # ── 1. ZooKeeper ──────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: cs-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - cryptostream-net
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── 2. Kafka broker ───────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: cs-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Two listeners:
+      #   INTERNAL — used by containers on cryptostream-net
+      #   EXTERNAL — exposed to the host machine on port 29092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168     # keep data for 7 days
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    ports:
+      - "29092:29092"   # host → Kafka external listener
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - cryptostream-net
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── 3. Schema Registry ────────────────────────────────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: cs-schema-registry
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - "8081:8081"
+    networks:
+      - cryptostream-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/subjects || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ── 4. Kafka UI ───────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: cs-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: cryptostream
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    ports:
+      - "8082:8080"    # → http://localhost:8082
+    networks:
+      - cryptostream-net
+
+  # ── 5. Ingestor ───────────────────────────────────────────────
+  ingestor:
+    build:
+      context: ./ingestor
+      dockerfile: Dockerfile
+    container_name: cs-ingestor
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      # Override broker URL to use internal Docker hostname
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_INTERNAL_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      COINGECKO_API_KEY: "${COINGECKO_API_KEY}"
+      NEON_DATABASE_URL: "${NEON_DATABASE_URL}"
+      NEON_POOLER_URL: "${NEON_POOLER_URL}"
+      POLL_INTERVAL_MS: "${POLL_INTERVAL_MS:-300000}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      METRICS_PORT: "9464"
+      NODE_ENV: "${NODE_ENV:-production}"
+    ports:
+      - "9464:9464"   # Prometheus scrape endpoint
+    volumes:
+      - ./ingestor/logs:/app/logs   # persist log files to host
+    networks:
+      - cryptostream-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9464/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── 6. PostgreSQL (Airflow metadata store) ─────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: cs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-airflow}"
+      POSTGRES_USER: "${POSTGRES_USER:-airflow}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - cryptostream-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── 7. Airflow DB init (one-shot) ─────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    container_name: cs-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER:-admin}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:-admin}" \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email "${AIRFLOW_ADMIN_EMAIL:-admin@cryptostream.local}"
+        echo "Airflow init complete."
+    restart: "no"
+
+  # ── 8. Airflow Webserver ──────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: cs-airflow-webserver
+    restart: unless-stopped
+    command: webserver
+    ports:
+      - "8080:8080"   # → http://localhost:8080
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── 9. Airflow Scheduler ──────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: cs-airflow-scheduler
+    restart: unless-stopped
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── 10. dbt (transformer) ──────────────────────────────────────
+  dbt:
+    image: ghcr.io/dbt-labs/dbt-postgres:1.8.0
+    container_name: cs-dbt
+    restart: on-failure
+    working_dir: /usr/app
+    entrypoint: ["dbt", "run", "--profiles-dir", "/usr/app", "--project-dir", "/usr/app"]
+    environment:
+      DBT_TARGET: dev
+      # Pass Neon connection through to profiles.yml via env vars
+      NEON_DATABASE_URL: "${NEON_DATABASE_URL}"
+      DBT_NEON_HOST: "${DBT_NEON_HOST:-ep-round-field-amz83azu.c-5.us-east-1.aws.neon.tech}"
+      DBT_NEON_USER: "${DBT_NEON_USER:-neondb_owner}"
+      DBT_NEON_PASSWORD: "${NEON_DB_PASSWORD}"
+      DBT_NEON_DB: "${DBT_NEON_DB:-neondb}"
+      DBT_NEON_PORT: "5432"
+    volumes:
+      - ./dbt_transform:/usr/app
+    depends_on:
+      - postgres
+    networks:
+      - cryptostream-net
+
+  # ── 11. Prometheus ────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: cs-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"       # allows hot config reload via HTTP
+    ports:
+      - "9090:9090"   # → http://localhost:9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - cryptostream-net
+    depends_on:
+      ingestor:
+        condition: service_healthy
+
+  # ── 12. Grafana ───────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: cs-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Auto-provision Prometheus datasource
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    ports:
+      - "3000:3000"   # → http://localhost:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - cryptostream-net
+    depends_on:
+      - prometheus
+
+# ─────────────────────────── Networks ─────────────────────────────
+networks:
+  cryptostream-net:
+    driver: bridge
+    name: cryptostream-net
+
+# ─────────────────────────── Volumes ──────────────────────────────
+volumes:
+  zookeeper_data:
+  kafka_data:
+  postgres_data:
+  airflow_logs:
+  prometheus_data:
+  grafana_data:

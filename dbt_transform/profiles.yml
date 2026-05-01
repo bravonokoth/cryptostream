@@ -1,0 +1,24 @@
+# dbt connection profiles
+#
+# All sensitive values are read from environment variables
+# that docker-compose injects at runtime — nothing is hardcoded here.
+#
+# Target: dev  (the only target used in local Docker)
+#
+# To override the target at runtime:
+#   dbt run --target prod --profiles-dir /usr/app
+
+cryptostream:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host:     "{{ env_var('DBT_NEON_HOST') }}"
+      user:     "{{ env_var('DBT_NEON_USER') }}"
+      password: "{{ env_var('DBT_NEON_PASSWORD') }}"
+      port:     "{{ env_var('DBT_NEON_PORT', '5432') | int }}"
+      dbname:   "{{ env_var('DBT_NEON_DB', 'neondb') }}"
+      schema:   crypto_transform
+      threads:  4
+      connect_timeout: 30
+      sslmode: require     # Neon always requires SSL
