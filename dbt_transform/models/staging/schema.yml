@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: public
+    tables:
+      - name: raw_prices
+
+models:
+  - name: stg_crypto_prices
+    description: "Staging view for raw crypto prices."
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null

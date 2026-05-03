@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: dim_crypto_latest
+    description: "Latest prices for all crypto assets."
+    columns:
+      - name: coin_id
+        tests:
+          - unique
+          - not_null
+      - name: last_updated_at
+        tests:
+          - not_null

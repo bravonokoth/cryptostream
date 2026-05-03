@@ -181,3 +181,22 @@ The workflow performs the following:
 1. **Configuration Validation:** Validates the `docker-compose.yml` file.
 2. **Docker Build:** Builds the Docker image for the `ingestor` service.
 3. **Docker Push:** Automatically pushes the built image to the GitHub Container Registry (GHCR) upon merges or pushes to the `main` branch.
+
+---
+
+## Troubleshooting
+
+### DAG processed 0 msgs?
+- Check if the ingestor is actually producing messages. Visit `http://localhost:9464/metrics` and check the `ingestor_messages_produced_total` metric.
+- Ensure the `crypto.prices.raw` topic exists in Kafka. View it in the Kafka UI (`http://localhost:8082`).
+- Check Airflow logs for the `consume_and_load` task. If `enable_auto_commit` was true and it failed midway, it might have skipped offsets. We now use manual offset commits.
+- Check `NEON_DATABASE_URL` is set properly in your `.env`.
+
+### DBT models not refreshing?
+- The dbt transformation step is orchestrated by Airflow after ingestion. Make sure the Airflow DAG `kafka_to_neon` has completed successfully.
+- Ensure your Neon credentials in `.env` are correct.
+- Check Airflow task logs for `run_dbt_models`.
+
+### No Data in Grafana?
+- If the ingestor dashboard is blank, check if Prometheus is scraping `cs-ingestor` correctly (`http://localhost:9090/targets`).
+- For Neon queries, verify the Postgres datasource connects to your Neon host with the right credentials. Ensure you have granted permissions using `scripts/neon_setup.sql`.

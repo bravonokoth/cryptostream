@@ -26,9 +26,9 @@ scrape_configs:
     metrics_path: /metrics
 
   # ── Kafka (JMX exporter — optional, add later) ─
-  # - job_name: "kafka"
-  #   static_configs:
-  #     - targets: ["kafka:7071"]
+  - job_name: "kafka"
+    static_configs:
+      - targets: ["kafka:7071"]
 
   # ── Prometheus self-monitoring ─────────────────
   - job_name: "prometheus"

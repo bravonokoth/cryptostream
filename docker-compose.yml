@@ -27,8 +27,6 @@
 #   • grafana_data        — Grafana dashboards & datasources
 # ══════════════════════════════════════════════════════════════════
 
-version: "3.9"
-
 # ─────────────────────── Shared defaults ──────────────────────────
 x-airflow-common: &airflow-common
   image: apache/airflow:2.9.1-python3.11
@@ -39,13 +37,21 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
       postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     AIRFLOW__WEBSERVER__SECRET_KEY: "${AIRFLOW_SECRET_KEY}"
+    _PIP_ADDITIONAL_REQUIREMENTS: "dbt-postgres"
     # Pass CryptoStream env vars so DAGs can use them
     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     NEON_DATABASE_URL: "${NEON_DATABASE_URL}"
     COINGECKO_API_KEY: "${COINGECKO_API_KEY}"
+    # dbt env vars
+    DBT_NEON_HOST: "${DBT_NEON_HOST:-ep-round-field-amz83azu.c-5.us-east-1.aws.neon.tech}"
+    DBT_NEON_USER: "${DBT_NEON_USER:-neondb_owner}"
+    DBT_NEON_PASSWORD: "${NEON_DB_PASSWORD}"
+    DBT_NEON_DB: "${DBT_NEON_DB:-neondb}"
+    DBT_NEON_PORT: "5432"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/plugins:/opt/airflow/plugins
+    - ./dbt_transform:/opt/airflow/dbt_transform
     - airflow_logs:/opt/airflow/logs
   depends_on:
     postgres:
@@ -56,7 +62,7 @@ x-airflow-common: &airflow-common
 # ─────────────────────────── Services ─────────────────────────────
 services:
 
-  # ── 1. ZooKeeper ──────────────────────────────────────────────
+# ── 1. ZooKeeper ──────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: cs-zookeeper
@@ -64,12 +70,14 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # Enable ruok command for healthcheck
+      ZOOKEEPER_4LW_COMMANDS_WHITELIST: ruok,mntr,conf
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
     networks:
       - cryptostream-net
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      test: ["CMD-SHELL", "echo srvr | nc -w 2 localhost 2181 | grep Zookeeper"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -200,7 +208,7 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-airflow}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -237,7 +245,7 @@ services:
     restart: unless-stopped
     command: webserver
     ports:
-      - "8080:8080"   # → http://localhost:8080
+      - "8083:8080"   # → http://localhost:8083
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -258,28 +266,7 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  # ── 10. dbt (transformer) ──────────────────────────────────────
-  dbt:
-    image: ghcr.io/dbt-labs/dbt-postgres:1.8.0
-    container_name: cs-dbt
-    restart: on-failure
-    working_dir: /usr/app
-    entrypoint: ["dbt", "run", "--profiles-dir", "/usr/app", "--project-dir", "/usr/app"]
-    environment:
-      DBT_TARGET: dev
-      # Pass Neon connection through to profiles.yml via env vars
-      NEON_DATABASE_URL: "${NEON_DATABASE_URL}"
-      DBT_NEON_HOST: "${DBT_NEON_HOST:-ep-round-field-amz83azu.c-5.us-east-1.aws.neon.tech}"
-      DBT_NEON_USER: "${DBT_NEON_USER:-neondb_owner}"
-      DBT_NEON_PASSWORD: "${NEON_DB_PASSWORD}"
-      DBT_NEON_DB: "${DBT_NEON_DB:-neondb}"
-      DBT_NEON_PORT: "5432"
-    volumes:
-      - ./dbt_transform:/usr/app
-    depends_on:
-      - postgres
-    networks:
-      - cryptostream-net
+# dbt service removed; Airflow now orchestrates dbt using the dbt-postgres pip package.
 
   # ── 11. Prometheus ────────────────────────────────────────────
   prometheus:
@@ -314,7 +301,7 @@ services:
       # Auto-provision Prometheus datasource
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     ports:
-      - "3000:3000"   # → http://localhost:3000
+      - "3001:3000"   # → http://localhost:3001
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
