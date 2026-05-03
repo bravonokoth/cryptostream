@@ -23,10 +23,50 @@ jobs:
       - name: Validate docker-compose.yml
         run: docker compose config --quiet
 
+  test-data-pipeline:
+    name: Test Airflow & dbt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install apache-airflow==2.9.1
+          pip install -r airflow/requirements.txt
+          pip install dbt-postgres
+
+      - name: Validate Airflow DAGs
+        run: |
+          export AIRFLOW_HOME=$(pwd)/airflow
+          airflow db migrate
+          python -c "from airflow.models import DagBag; d = DagBag(dag_folder='airflow/dags'); assert not d.import_errors, f'DAG import errors: {d.import_errors}'"
+
+      - name: Validate dbt Models
+        run: |
+          mkdir -p ~/.dbt
+          echo "cryptostream:
+            target: dev
+            outputs:
+              dev:
+                type: postgres
+                host: localhost
+                user: dummy
+                password: dummy
+                port: 5432
+                dbname: dummy
+                schema: public" > ~/.dbt/profiles.yml
+          dbt parse --project-dir dbt_transform
+
   build-ingestor:
     name: Build Ingestor Docker Image
     runs-on: ubuntu-latest
-    needs: validate
+    needs: [validate, test-data-pipeline]
     permissions:
       contents: read
       packages: write
