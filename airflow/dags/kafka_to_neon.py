@@ -138,10 +138,22 @@ def kafka_to_neon():
         
         print(f"Successfully processed and inserted {messages_inserted} records into Neon.")
 
-    # Trigger dbt run after load
+    # Trigger dbt run after load.
+    # --no-version-check  : skips the git binary check that fails for the
+    #                       Airflow container's non-root user (exit code 2).
+    # --log-level-file none : streams all output to stdout so errors are
+    #                         visible directly in the Airflow task log.
     dbt_run = BashOperator(
         task_id="run_dbt_models",
-        bash_command="dbt run --profiles-dir /opt/airflow/dbt_transform --project-dir /opt/airflow/dbt_transform",
+        bash_command=(
+            "dbt run "
+            "--profiles-dir /opt/airflow/dbt_transform "
+            "--project-dir /opt/airflow/dbt_transform "
+            "--target-path /tmp/dbt_target "
+            "--log-path /tmp/dbt_logs "
+            "--no-version-check "
+            "--log-level-file none"
+        ),
     )
 
     consume_and_load() >> dbt_run

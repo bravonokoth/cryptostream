@@ -53,6 +53,7 @@ x-airflow-common: &airflow-common
     - ./airflow/plugins:/opt/airflow/plugins
     - ./dbt_transform:/opt/airflow/dbt_transform
     - airflow_logs:/opt/airflow/logs
+    - ./airflow/requirements.txt:/opt/airflow/requirements.txt:ro
   depends_on:
     postgres:
       condition: service_healthy

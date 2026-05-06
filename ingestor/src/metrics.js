@@ -1,68 +1,80 @@
 /**
- * metrics.js — Prometheus instrumentation for the CryptoStream Ingestor
- *
- * All counters / gauges / histograms that index.js references are exported here.
- * prom-client auto-registers them on the default registry.
+ * metrics.js
+ * ──────────
+ * Defines all Prometheus metrics for the ingestor.
+ * index.js imports these and calls .inc() / .set() / .startTimer()
+ * at the right moments. The Express /metrics route then exposes
+ * them so Prometheus can scrape them every 15 seconds.
  */
 
 const client = require("prom-client");
 
-// Enable Node.js default metrics (event-loop lag, memory, etc.)
-client.collectDefaultMetrics({ prefix: "cryptostream_" });
+// ── Default Node.js metrics ────────────────────────────────────
+// Automatically tracks: CPU usage, memory heap, event loop lag,
+// garbage collection — all prefixed with "cs_ingestor_"
+client.collectDefaultMetrics({ prefix: "cs_ingestor_" });
 
-// ── Counters ────────────────────────────────────────────────────
-
-/** Tracks CoinGecko API calls, labelled success | error */
+// ── 1. Fetch counter ───────────────────────────────────────────
+// Counts every call to CoinGecko API, labelled by outcome.
+// Grafana uses this to compute: error rate = errors / (errors + success)
 const fetchCounter = new client.Counter({
-  name:       "cryptostream_coingecko_fetch_total",
-  help:       "Total CoinGecko API calls",
-  labelNames: ["status"],
+  name: "cs_coingecko_fetch_total",
+  help: "Total CoinGecko API fetch attempts",
+  labelNames: ["status"], // "success" | "error"
 });
 
-/** Tracks Kafka produce calls, labelled by topic and status */
-const kafkaProducedCounter = new client.Counter({
-  name:       "cryptostream_kafka_produced_total",
-  help:       "Total messages produced to Kafka",
-  labelNames: ["topic", "status"],
-});
-
-/** Tracks messages routed to the dead-letter queue */
-const dlqCounter = new client.Counter({
-  name:       "cryptostream_dlq_total",
-  help:       "Total messages sent to DLQ",
-  labelNames: ["reason"],
-});
-
-// ── Gauges ──────────────────────────────────────────────────────
-
-/** Number of coins returned by CoinGecko in the last batch */
-const batchSizeGauge = new client.Gauge({
-  name: "cryptostream_batch_size",
-  help: "Number of coins fetched in the most recent cycle",
-});
-
-// ── Histograms ──────────────────────────────────────────────────
-
-/** How long each CoinGecko page fetch takes, in seconds */
+// ── 2. Fetch duration ──────────────────────────────────────────
+// Histogram measures HOW LONG each CoinGecko call takes in seconds.
+// Buckets: 0.1s, 0.5s, 1s, 2s, 5s, 10s
+// Grafana shows this as a latency graph — you see if API slows down
 const fetchDuration = new client.Histogram({
-  name:    "cryptostream_coingecko_fetch_duration_seconds",
-  help:    "Duration of CoinGecko API page fetches",
-  buckets: [0.1, 0.5, 1, 2, 5, 10, 30],
+  name: "cs_coingecko_fetch_duration_seconds",
+  help: "CoinGecko API fetch duration in seconds",
+  buckets: [0.1, 0.5, 1, 2, 5, 10],
 });
 
-/** How long a full ingestion cycle (fetch + produce all coins) takes */
+// ── 3. Kafka produced counter ──────────────────────────────────
+// Counts every message sent to Kafka, labelled by topic and status.
+// Lets you see: how many went to main topic vs dead letter queue
+const kafkaProducedCounter = new client.Counter({
+  name: "cs_kafka_produced_total",
+  help: "Total messages produced to Kafka",
+  labelNames: ["topic", "status"], // topic: main|dlq, status: success|error
+});
+
+// ── 4. Dead letter queue counter ──────────────────────────────
+// Counts specifically how many messages were REJECTED and why.
+// If this spikes, CoinGecko changed their response shape
+const dlqCounter = new client.Counter({
+  name: "cs_dlq_messages_total",
+  help: "Messages routed to dead letter queue",
+  labelNames: ["reason"], // "missing_coin_id" | "invalid_price" etc
+});
+
+// ── 5. Batch size gauge ────────────────────────────────────────
+// Gauge (not counter) — tracks the CURRENT value, not cumulative.
+// Shows how many coins came back in the last poll cycle.
+// If CoinGecko silently starts returning 50 instead of 200, you see it
+const batchSizeGauge = new client.Gauge({
+  name: "cs_batch_size",
+  help: "Number of coins fetched in the last poll cycle",
+});
+
+// ── 6. Cycle duration ──────────────────────────────────────────
+// Tracks how long the entire fetch+validate+produce cycle takes.
+// If this grows beyond your 5-minute interval, you have a problem
 const cycleDuration = new client.Histogram({
-  name:    "cryptostream_cycle_duration_seconds",
-  help:    "Duration of a complete ingestion cycle",
-  buckets: [1, 5, 10, 30, 60, 120, 300],
+  name: "cs_cycle_duration_seconds",
+  help: "Total duration of one full ingestion cycle",
+  buckets: [1, 5, 10, 20, 30, 60],
 });
 
 module.exports = {
   client,
   fetchCounter,
+  fetchDuration,
   kafkaProducedCounter,
   dlqCounter,
   batchSizeGauge,
-  fetchDuration,
   cycleDuration,
 };
